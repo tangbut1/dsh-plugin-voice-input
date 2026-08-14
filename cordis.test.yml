@@ -1,0 +1,6 @@
+# Test overlay: mounts BOTH halves by bare package name. Works only while the
+# package resolves from the profile baseUrl (e.g. a junction under
+# $DSH_HOME/profiles/node_modules pointing at this directory). Do not ship.
+- insert:
+    - id: voice-input
+      name: dsh-plugin-voice-input

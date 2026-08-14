@@ -1,0 +1,11 @@
+# dsh-plugin-voice-input bundle layer.
+#
+# One row = both halves: the host Loader mounts the package main entry
+# (lib/index.js — the loopback ASR server), and the web client-modules scan
+# serves exports["./client"] (lib/client.js — the mic button) because
+# package.json declares dsh.client with platform "web".
+#
+# Used automatically by `dsh plugin --profile <name> add <this dir>`.
+- insert:
+    - id: voice-input
+      name: dsh-plugin-voice-input

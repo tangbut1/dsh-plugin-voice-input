@@ -1,0 +1,10 @@
+# Local --patch overlay: HOST HALF ONLY, for verifying the ASR service.
+#
+#   dsh web --patch D:/dsh/dsh-plugin-voice-input/cordis.dev.yml
+#
+# Client rows can only be scanned when the row name resolves as an installed
+# package name (the client-modules resolver reads <name>/package.json), so the
+# browser half (mic button) requires `dsh plugin add` — see README.md.
+- insert:
+    - id: voice-input
+      name: file:///D:/dsh/dsh-plugin-voice-input/lib/index.js

@@ -1,0 +1,57 @@
+{
+  "name": "dsh-plugin-voice-input",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness Web 语音输入插件：按住说话的麦克风按钮 + 本机离线 sherpa-onnx SenseVoice ASR",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "client": {
+      "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "voice-input",
+    "asr",
+    "sherpa-onnx",
+    "sense-voice"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "esbuild": "^0.28.2",
+    "sherpa-onnx-node": "^1.13.5"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@types/react": "^19.2.18",
+    "react": "^19.2.8",
+    "typescript": "^7.0.2"
+  }
+}
