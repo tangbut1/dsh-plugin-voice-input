@@ -19,6 +19,9 @@ import { useEffect, useRef, useState } from 'react'
 const ASR_BASE = 'http://127.0.0.1:18765'
 const MIN_RECORD_MS = 300
 const ASR_TIMEOUT_MS = 60000
+/** Re-probe cadence: fast while the service is missing, slow once it answers. */
+const SERVICE_RETRY_MS = 3000
+const SERVICE_RECHECK_MS = 30000
 
 /** Official scoped insert-text payload ({@link https://github.com/deepseek-ai/deepseek-harness} ui-input-trigger contract). */
 interface TokenSpan {
@@ -67,13 +70,13 @@ interface ClientPluginContext {
 
 /** Inject face delivered to the registered component (per session). */
 interface VoiceInject {
-  insert(text: string, fallback: DraftSnapshot): boolean
+  insert(text: string, fallback?: DraftSnapshot): boolean
 }
 
 /** Props the component actually reads: owner share + session standard kit + inject face. */
 interface VoiceButtonProps extends VoiceInject {
-  sessionId: string
-  input: DraftSnapshot
+  sessionId?: string
+  input?: DraftSnapshot
 }
 
 /** A live recording session: stop() resolves the captured 16 kHz mono samples. */
@@ -124,7 +127,8 @@ export function apply(ctx: ClientPluginContext): void {
     id: 'voice-input',
     order: 100,
     label: '语音输入 / Voice input',
-    inject: (sessionId: string): VoiceInject => ({
+    inject: (sessionId: string): VoiceInject & { sessionId: string } => ({
+      sessionId,
       insert: (text, fallback) => insertText(ctx, sessionId, text, fallback),
     }),
   }, VoiceButton))
@@ -132,12 +136,19 @@ export function apply(ctx: ClientPluginContext): void {
 
 /** Read the live draft state through the conversation input resolver (fails soft). */
 function liveDraft(ctx: ClientPluginContext, actx: ScopedContext): DraftSnapshot | undefined {
-  const conversation = ctx.get('conversation') as ConversationService | undefined
+  const conversation = (ctx.get('conversation') ?? (actx as unknown as { get?(name: string): unknown }).get?.('conversation')) as ConversationService | undefined
   const resolver = conversation?.input
   if (resolver === undefined) return undefined
   try {
-    const state = resolver.for(actx).state.getSnapshot()
-    return { draft: state.draft, draftRev: state.draftRev }
+    const shell = resolver.for(actx) as unknown as {
+      state?: { getSnapshot(): DraftSnapshot }
+      snapshot?: DraftSnapshot
+    }
+    const state = shell?.state?.getSnapshot() ?? shell?.snapshot
+    if (state !== undefined && typeof state.draft === 'string') {
+      return { draft: state.draft, draftRev: state.draftRev ?? 0 }
+    }
+    return undefined
   } catch {
     return undefined
   }
@@ -153,18 +164,38 @@ function insertText(
   ctx: ClientPluginContext,
   sessionId: string,
   text: string,
-  fallback: DraftSnapshot,
+  fallback?: DraftSnapshot,
 ): boolean {
-  const actx = ctx.sessions.scope(sessionId)
+  const actx = ctx.sessions?.scope(sessionId)
   if (actx === undefined) return false
-  const live = liveDraft(ctx, actx) ?? fallback
+  const live = liveDraft(ctx, actx) ?? fallback ?? { draft: '', draftRev: 0 }
   const separator = live.draft !== '' && !/[\s\n]$/.test(live.draft) ? ' ' : ''
   const span: TokenSpan = {
     start: live.draft.length,
     end: live.draft.length,
     draftRev: live.draftRev,
   }
-  return actx.bail(actx, 'slash/input-insert-text', { text: separator + text, span }) === true
+  const toInsert = separator + text
+
+  // 1. Official scoped event path
+  if (actx.bail(actx, 'slash/input-insert-text', { text: toInsert, span }) === true) {
+    return true
+  }
+
+  // 2. Direct session input shell fallback
+  try {
+    const conversation = (ctx.get('conversation') ?? (actx as unknown as { get?(name: string): unknown }).get?.('conversation')) as ConversationService | undefined
+    const shell = conversation?.input?.for(actx) as unknown as {
+      actions?: { insertText?(text: string, span: TokenSpan): boolean }
+      insertText?(text: string, span: TokenSpan): boolean
+    }
+    if (shell?.actions?.insertText?.(toInsert, span) === true) return true
+    if (shell?.insertText?.(toInsert, span) === true) return true
+  } catch {
+    // ignore
+  }
+
+  return false
 }
 
 /** Pick a MediaRecorder mime type this browser supports. */
@@ -342,6 +373,23 @@ const SPINNER = React.createElement(
   }),
 )
 
+/**
+ * Probe the loopback ASR service; resolves true as soon as it answers at all.
+ *
+ * The page routinely mounts before the host half has bound its port (the host
+ * mounts plugins during boot, the shell can be served earlier), so a single
+ * mount-time probe is not enough: this is retried on a timer and again on every
+ * press, which lets a stale "unavailable" heal without a page reload.
+ */
+async function probeService(timeoutMs = 2500): Promise<boolean> {
+  try {
+    const res = await fetch(`${ASR_BASE}/health`, { signal: AbortSignal.timeout(timeoutMs), cache: 'no-store' })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 /** The hold-to-talk button plus its transient error bubble. */
 function VoiceButton(props: VoiceButtonProps): React.ReactElement {
   const { sessionId, input, insert } = props
@@ -350,13 +398,26 @@ function VoiceButton(props: VoiceButtonProps): React.ReactElement {
   const [error, setError] = useState<ErrorNotice | null>(null)
   const sessionRef = useRef<RecordSession | null>(null)
   const startedAtRef = useRef(0)
+  // Pointer still held? begin() awaits, so releases can land mid-setup.
+  const heldRef = useRef(false)
 
   useEffect(() => {
     let alive = true
-    fetch(`${ASR_BASE}/health`, { signal: AbortSignal.timeout(4000) })
-      .then((res) => { if (alive) setService(res.ok ? 'ok' : 'ok') })
-      .catch(() => { if (alive) setService('down') })
-    return () => { alive = false }
+    let timer: number | undefined
+    const tick = async (): Promise<void> => {
+      const up = await probeService()
+      if (!alive) return
+      setService(up ? 'ok' : 'down')
+      timer = window.setTimeout(
+        () => { void tick() },
+        up ? SERVICE_RECHECK_MS : SERVICE_RETRY_MS,
+      )
+    }
+    void tick()
+    return () => {
+      alive = false
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
   }, [])
 
   useEffect(() => {
@@ -375,17 +436,29 @@ function VoiceButton(props: VoiceButtonProps): React.ReactElement {
     event.preventDefault()
     if (phase !== 'idle') return
     event.currentTarget.setPointerCapture?.(event.pointerId)
+    heldRef.current = true
     setError(null)
-    if (service === 'down') {
-      setError({
-        message: '语音服务不可用：请确认 dsh 已带本插件启动（127.0.0.1:18765）',
-        seq: Date.now(),
-      })
-      return
-    }
     void (async () => {
+      // Never refuse on a stale 'down': re-check the service right now.
+      if (service === 'down') {
+        if (!(await probeService())) {
+          heldRef.current = false
+          setError({
+            message: '语音服务不可用：请确认 dsh 已带本插件启动（127.0.0.1:18765）',
+            seq: Date.now(),
+          })
+          return
+        }
+        if (!heldRef.current) return
+        setService('ok')
+      }
       try {
         const session = await openMic()
+        // Released while probing/opening: drop the mic instead of recording forever.
+        if (!heldRef.current) {
+          void session.cancel()
+          return
+        }
         sessionRef.current = session
         startedAtRef.current = Date.now()
         setPhase('recording')
@@ -396,6 +469,7 @@ function VoiceButton(props: VoiceButtonProps): React.ReactElement {
   }
 
   const finish = (): void => {
+    heldRef.current = false
     if (phase !== 'recording') return
     const session = sessionRef.current
     sessionRef.current = null
@@ -444,7 +518,7 @@ function VoiceButton(props: VoiceButtonProps): React.ReactElement {
           setError({ message: '未识别到语音内容', seq: Date.now() })
           return
         }
-        const fallback: DraftSnapshot = { draft: input.draft, draftRev: input.draftRev }
+        const fallback: DraftSnapshot = { draft: input?.draft ?? '', draftRev: input?.draftRev ?? 0 }
         if (!insert(text, fallback)) {
           setError({ message: '插入草稿失败：草稿已变化，请重试', seq: Date.now() })
         }

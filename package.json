@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-voice-input",
   "version": "0.1.0",
-  "description": "DeepSeek Harness Web 语音输入插件：按住说话的麦克风按钮 + 本机离线 sherpa-onnx SenseVoice ASR",
+  "description": "DeepSeek Harness 官方桌面版与 Web 语音输入插件：按住说话的麦克风按钮 + 本机离线 sherpa-onnx SenseVoice ASR",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -15,7 +15,11 @@
   ],
   "dsh": {
     "client": {
-      "platform": "web"
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
     },
     "bundle": {
       "patch": "./cordis.patch.yml"

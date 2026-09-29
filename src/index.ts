@@ -244,7 +244,7 @@ function wavToFloat32(body: Buffer): { samples: Float32Array; sampleRate: number
   return { samples: samples.subarray(0, n), sampleRate: format.sampleRate }
 }
 
-/** Accept requests only from localhost / loopback / private-network page origins. */
+/** Accept requests only from localhost / loopback / private-network page origins or DSH desktop scheme. */
 function allowedOrigin(origin: string | undefined): boolean {
   if (origin === undefined || origin === '' || origin === 'null') return true
   let url: URL
@@ -252,6 +252,10 @@ function allowedOrigin(origin: string | undefined): boolean {
     url = new URL(origin)
   } catch {
     return false
+  }
+  // DeepSeek Harness Desktop (Electron) origin: dsh-app://app or dsh-app://shell
+  if (url.protocol === 'dsh-app:' && (url.hostname === 'app' || url.hostname === 'shell')) {
+    return true
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
   const host = url.hostname.replace(/^\[|\]$/g, '')
@@ -291,7 +295,8 @@ function corsHeaders(origin: string | undefined): Record<string, string> {
   return {
     'access-control-allow-origin': origin ?? '*',
     'access-control-allow-methods': 'GET, POST, OPTIONS',
-    'access-control-allow-headers': 'content-type',
+    'access-control-allow-headers': '*',
+    'access-control-allow-private-network': 'true',
     vary: 'Origin',
   }
 }
@@ -328,12 +333,23 @@ function readBody(req: IncomingMessage, max: number): Promise<Buffer> {
   })
 }
 
+/** True when both model files are already on disk (the engine can load without downloading). */
+function modelFilesPresent(): boolean {
+  const dir = join(dataDir(), MODEL_DIR_NAME)
+  return existsSync(join(dir, 'model.int8.onnx')) && existsSync(join(dir, 'tokens.txt'))
+}
+
 function health(): unknown {
+  const files = modelFilesPresent()
   return {
-    ok: modelState.state === 'ready',
+    // Usable when the engine is warm, or when the model sits on disk and will be
+    // loaded on demand — the recognizer is built lazily inside the first /asr
+    // request, so a fresh process is 'missing' yet perfectly serviceable.
+    ok: modelState.state === 'ready' || (modelState.state === 'missing' && files),
     engine: 'sherpa-onnx sense-voice-small int8',
     model: MODEL_DIR_NAME,
     port: port(),
+    modelFiles: files,
     modelState,
   }
 }
